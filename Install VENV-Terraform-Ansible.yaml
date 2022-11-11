@@ -1,0 +1,259 @@
+---
+-
+
+  name: Package Installation (Python 3, Virtual Environment, Go and Terraform)
+  hosts: localhost
+  become: true
+  vars:
+    - directory_path: "{{playbook_dir}}"
+    - virtual_environment_name: test #The name of your virtual environment
+    - script_name: upgrade_ansible.sh #This is just a name of a script. You can put anything in here.
+    - username: "{{ lookup('env', 'USER') }}" #your username
+  tasks:
+
+#Updating the Local Packages
+
+  - name: Updating cache
+    apt:
+     update_cache: yes
+     cache_valid_time: 86400
+
+  - name: Installing Python 3
+    become: true
+    apt:
+      name: python3-pip
+      state: present  
+  
+  - name: Installing software properties common
+    become: true
+    apt:
+      name: software-properties-common
+      state: present
+  
+  - name: Adding repository Universe
+    become: true
+    shell: add-apt-repository universe
+
+  - name: Installing Python 3
+    become: true
+    apt:
+      name: python3-pip
+      state: present  
+
+  - name: Create app folder
+    file:
+      name: "{{playbook_dir}}/{{virtual_environment_name}}"
+      state: directory
+      recurse: yes
+      mode: '0755'
+
+  - name: Install virtualenv module
+    pip:
+      name: virtualenv
+      state: latest
+
+  - name: Manual Creation of a Virtual environment
+    command:
+      cmd: virtualenv "{{directory_path}}/{{virtual_environment_name}}"
+
+  - name: Attempting to Install Ansible
+    pip:
+      name: ansible
+      state: present
+      virtualenv: "{{directory_path}}/{{virtual_environment_name}}"
+
+  - name: Adding permissions
+    shell: sudo chown -R {{username}}:{{username}} {{directory_path}}/{{virtual_environment_name}}
+
+  - name: Creating a script to upgrade Ansible to the latest released version.
+    copy:
+      dest: "{{directory_path}}/{{virtual_environment_name}}/{{script_name}}"
+      content: |
+                #!/bin/bash
+                cd {{directory_path}}/{{virtual_environment_name}}
+                . bin/activate
+                
+                sudo add-apt-repository --yes --update ppa:ansible/ansible
+                pip install ansible
+                pip install --upgrade ansible
+      mode: u+x
+
+  - name: Executing Script
+    shell: "{{directory_path}}/{{virtual_environment_name}}/{{script_name}} executable=/bin/bash"
+  
+  - name: Deleting script
+    shell: sudo rm -rf "{{directory_path}}/{{virtual_environment_name}}/{{script_name}}"
+
+#Installing Golang
+
+  - name: Downloading Golang
+    shell: git clone https://github.com/udhos/update-golang "{{directory_path}}/{{virtual_environment_name}}/update-golang"
+    args:
+      creates: "{{directory_path}}/{{virtual_environment_name}}/update-golang"
+
+  - name: Finding Golang
+    shell: pwd update-golang
+    register: output
+
+  - name: Returning result
+    debug:
+      msg: "Golang Location is in {{output}}"
+
+  - name: Installing Golang.
+    shell: (cd "{{directory_path}}/{{virtual_environment_name}}/update-golang"/ && sudo ./update-golang.sh)
+
+  - name: Adding to PATH
+    shell: export PATH=$PATH:/usr/local/go/bin
+
+  - debug:
+      msg: "Golang successfully installed. Proceeding to next step."
+
+#Installing Terraform
+
+  - name: Downloading Terraform
+    shell: git clone https://github.com/hashicorp/terraform.git "{{directory_path}}/{{virtual_environment_name}}/terraform"
+    args:
+       creates: "{{directory_path}}/{{virtual_environment_name}}/terraform"
+
+  - name: Installing Terraform
+    shell: (cd "{{directory_path}}/{{virtual_environment_name}}/terraform" && go install -buildvcs=false)
+    environment:
+      PATH: /sbin:/usr/sbin:/bin:/usr/bin:/usr/local/bin:/usr/local/go/bin
+
+  - debug:
+      msg: "Installation Complete. Proceeding to next step"
+
+#Initiating Terraform
+
+  - name: Creating Terraform Configuration file
+    copy:
+      dest: "{{directory_path}}/{{virtual_environment_name}}/main.tf"
+      content: |
+                  # We strongly recommend using the required_providers block to set the 
+                  # Azure Provider source and version being used 
+                  terraform { 
+                    required_providers { 
+                      azurerm = { 
+                        source = "hashicorp/azurerm" 
+                      } 
+                    } 
+                  } 
+                  # Configure the Microsoft Azure Provider 
+                  provider "azurerm" { 
+                    features {} 
+                  } 
+                  resource "azurerm_resource_group" "blackfyre-resource-group" { 
+                    name     = "blackfyre-resource-group" 
+                    location = "East US" 
+                    tags = { 
+                      environment = "dev" 
+                    } 
+                  } 
+                  resource "azurerm_virtual_network" "blackfyre-virtual-network" { 
+                    name                = "blackfyre-virtual-network" 
+                    location            = azurerm_resource_group.blackfyre-resource-group.location 
+                    resource_group_name = azurerm_resource_group.blackfyre-resource-group.name 
+                    address_space       = ["10.0.0.0/16"] 
+                  } 
+                  resource "azurerm_subnet" "blackfyre-subnet" { 
+                    name                 = "blackfyre-subnet" 
+                    resource_group_name  = azurerm_resource_group.blackfyre-resource-group.name 
+                    virtual_network_name = azurerm_virtual_network.blackfyre-virtual-network.name 
+                    address_prefixes     = ["10.0.1.0/24"] 
+                  } 
+                  resource "azurerm_network_security_group" "blackfyre-network-security-group" { 
+                    name                = "blackfyre-network-security-group" 
+                    location            = azurerm_resource_group.blackfyre-resource-group.location 
+                    resource_group_name = azurerm_resource_group.blackfyre-resource-group.name 
+                  } 
+                  resource "azurerm_network_security_rule" "blackfyre-network-security-rule" { 
+                    name                        = "blackfyre-network-security-rule" 
+                    priority                    = 100 
+                    direction                   = "Inbound" 
+                    access                      = "Allow" 
+                    protocol                    = "*" 
+                    source_port_range           = "*" 
+                    destination_port_range      = "*" 
+                    source_address_prefix       = "*" 
+                    destination_address_prefix  = "*" 
+                    resource_group_name         = azurerm_resource_group.blackfyre-resource-group.name 
+                    network_security_group_name = azurerm_network_security_group.blackfyre-network-security-group.name 
+                  } 
+                  resource "azurerm_subnet_network_security_group_association" "blackfyre-subnet-security-association" { 
+                    subnet_id                 = azurerm_subnet.blackfyre-subnet.id 
+                    network_security_group_id = azurerm_network_security_group.blackfyre-network-security-group.id 
+                  } 
+                  resource "azurerm_public_ip" "blackfyre-public-ip" { 
+                    name                = "blackfyreIP" //may be changed when creating another VM
+                    resource_group_name = azurerm_resource_group.blackfyre-resource-group.name 
+                    location            = azurerm_resource_group.blackfyre-resource-group.location 
+                    allocation_method   = "Dynamic" 
+                    tags = { 
+                      environment = "Dev" 
+                    } 
+                  } 
+                  resource "azurerm_network_interface" "blackfyre_network_interface" { 
+                    name                = "blackfyre-nic" //may be changed when creating another VM
+                    location            = azurerm_resource_group.blackfyre-resource-group.location 
+                    resource_group_name = azurerm_resource_group.blackfyre-resource-group.name 
+                    ip_configuration { 
+                      name                          = "internal" 
+                      subnet_id                     = azurerm_subnet.blackfyre-subnet.id 
+                      private_ip_address_allocation = "Dynamic" 
+                      public_ip_address_id          = azurerm_public_ip.blackfyre-public-ip.id //may be changed when creating another VM
+                    } 
+                  } 
+                  resource "azurerm_linux_virtual_machine" "blackfyre-virtual-machine" { 
+                    name                = "blackfyre-vm-machine" 
+                    resource_group_name = azurerm_resource_group.blackfyre-resource-group.name 
+                    location            = azurerm_resource_group.blackfyre-resource-group.location 
+                    size                = "Standard_F2" 
+                    admin_username      = "blackfyre" 
+                    network_interface_ids = [ 
+                      azurerm_network_interface.blackfyre_network_interface.id, //may be changed when creating another VM
+                    ] 
+                    admin_ssh_key { 
+                      username   = "blackfyre" 
+                      public_key = file("~/.ssh/Phoenix.pub") //may be changed when creating another VM
+                    } 
+                    os_disk { 
+                      caching              = "ReadWrite" 
+                      storage_account_type = "Standard_LRS" 
+                    } 
+                    source_image_reference { 
+                      publisher = "Canonical" 
+                      offer     = "UbuntuServer" 
+                      sku       = "16.04-LTS" 
+                      version   = "latest" 
+                    } 
+                  }
+
+  - name: Initializing Terraform
+    shell: (cd "{{directory_path}}/{{virtual_environment_name}}/" && terraform init)
+    register: initvar
+  
+  - debug:
+      var: initvar
+
+  - name: Deleting Cloned Golang directory
+    shell: (cd "{{directory_path}}/{{virtual_environment_name}}"/ && sudo rm -rf update-golang)
+
+  - name: Deleting Cloned Terraform directory
+    shell: (cd "{{directory_path}}/{{virtual_environment_name}}"/ && sudo rm -rf terraform)
+
+  - debug:
+      msg: "Cloned repositories have been removed."
+
+  - debug:
+      msg: "You are now ready to begin modifying your files. Activate it using source <name of your venv>/bin/activate"
+
+  - name: Initiating Terraform Plan
+    shell: (cd "{{directory_path}}/{{virtual_environment_name}}/" && terraform plan)
+
+  - name: Basic deploy of a service
+    community.general.terraform:
+      project_path: '{{directory_path}}/{{virtual_environment_name}}'
+      state: present
+
+
+    
